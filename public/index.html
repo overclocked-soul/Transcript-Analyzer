@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Call Transcript Analysis Dashboard</title>
+    <link rel="stylesheet" href="index.css" />
+  </head>
+  <body>
+    <div class="container">
+      <h1>Solar Call Transcript Analysis Dashboard</h1>
+      <div class="input-section">
+        <div class="input-toggle">
+          <label class="toggle-label">
+            <input type="radio" name="input-type" value="url" checked /> URL
+          </label>
+          <label class="toggle-label">
+            <input type="radio" name="input-type" value="json" /> JSON
+          </label>
+        </div>
+
+        <div id="url-input-container">
+          <input
+            type="text"
+            id="transcript-url"
+            placeholder="Enter transcript URL..."
+          />
+        </div>
+
+        <div id="json-input-container" class="hidden">
+          <textarea
+            id="transcript-json"
+            placeholder="Paste JSON transcript content here..."
+          ></textarea>
+        </div>
+
+        <button id="analyze-btn">Analyze Transcript</button>
+
+        <div id="loader" class="hidden">
+          Analyzing transcript... Please wait
+        </div>
+      </div>
+
+      <div id="analysis-results" class="hidden">
+        <div class="toolbar">
+          <div class="transcript-selector" id="transcript-selector">
+            <span class="selected-transcript">Current Transcript</span>
+          </div>
+          <input
+            type="text"
+            class="search-box"
+            placeholder="Search transcripts..."
+            id="search-box"
+          />
+        </div>
+
+        <div class="metric-card">
+          <div class="metric">
+            <h3>Total Messages</h3>
+            <p id="total-messages">-</p>
+          </div>
+          <div class="metric">
+            <h3>Agent Messages</h3>
+            <p id="agent-messages">-</p>
+          </div>
+          <div class="metric">
+            <h3>Customer Messages</h3>
+            <p id="customer-messages">-</p>
+          </div>
+          <div class="metric">
+            <h3>Avg. Agent Words</h3>
+            <p id="avg-agent-words">-</p>
+          </div>
+          <div class="metric">
+            <h3>Avg. Customer Words</h3>
+            <p id="avg-customer-words">-</p>
+          </div>
+          <div class="metric">
+            <h3>Call Date</h3>
+            <p id="call-date">-</p>
+          </div>
+        </div>
+
+        <div class="dashboard-grid">
+          <div class="summary-section">
+            <div class="tabs">
+                <div class="tab active" data-tab="summary">Summary</div>
+                <div class="tab" data-tab="script">Script Adherence</div>
+                <div class="tab" data-tab="objections">Objections</div>
+                <div class="tab" data-tab="recs">Recommendations</div>
+            </div>
+
+            <div id="objections-tab" class="hidden">
+              <!-- <h2>Objection Handling Analysis</h2> -->
+              <div id="objections-content">
+                <!-- Objections content will be inserted here -->
+              </div>
+            </div>
+
+            <div id="recs-tab" class="hidden">
+              <!-- <h2>Recommendations</h2> -->
+              <div id="recs-content">
+                <!-- Recommendations content will be inserted here -->
+              </div>
+            </div>
+
+            <div id="summary-tab">
+              <!-- <h2>Call Summary</h2> -->
+              <div id="summary-content">
+                <!-- Summary content will be inserted here -->
+              </div>
+            </div>
+
+            <div id="script-tab" class="hidden">
+              <!-- <h2>Script Adherence Details</h2> -->
+              <div id="script-content">
+                <!-- Script content will be inserted here -->
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="error-message" class="hidden">
+        <h2>Error</h2>
+        <p id="error-text"></p>
+      </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/9.1.5/marked.min.js"></script>
+    <script src="index.js"></script>
+  </body>
+</html>
