@@ -10,873 +10,563 @@ import re
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from collections import defaultdict
-issue_summary = defaultdict(lambda: {'count': 0, 'examples': []})
-MAX_EXAMPLES = 5
-
-# Function to fetch JSON from website
-def load_transcript(json_str):
-    """Parse JSON transcript data into a pandas DataFrame"""
-    try:
-        # Parsing the JSON string
-        transcript_data = json.loads(json_str)
+class CallAnalyzer:
+    """
+    A general-purpose call transcript analyzer for AI agent conversations.
+    Can be customized for different types of call scripts and scenarios.
+    """
+    
+    def __init__(self, script_steps=None, objection_types=None):
+        """
+        Initialize the analyzer with optional script steps and objection types.
         
-        # Converting to Pandas DataFrame
-        df = pd.DataFrame(transcript_data)
+        Parameters:
+        - script_steps: Dictionary mapping step keys to keyword lists for detection
+        - objection_types: Dictionary mapping objection types to keyword lists for detection
+        """
+        # Default script steps that can be overridden
+        self.script_steps = script_steps or {
+            'greeting': ['hi', 'hello', 'good morning', 'good afternoon', 'my name is'],
+            'introduction': ['calling from', 'regarding', 'with respect to', 'about'],
+            'purpose': ['purpose of my call', 'reason for my call', 'calling to', 'would like to'],
+            'qualification': ['qualify', 'eligible', 'requirements', 'criteria'],
+            'information': ['provide information', 'explain', 'details', 'tell you about'],
+            'objection_handling': ['understand', 'concern', 'let me clarify', 'appreciate'],
+            'closing': ['thank you', 'appreciate your time', 'have a nice day', 'goodbye']
+        }
         
-        # Adding message length
-        df['message_length'] = df['content'].apply(len)
+        # Default objection types that can be overridden
+        self.objection_types = objection_types or {
+            'wrong_information': ['wrong name', 'wrong information', 'incorrect details'],
+            'call_source': ['where are you calling from', 'who is this', 'which company'],
+            'data_source': ['how did you get my', 'contact details', 'information'],
+            'call_frequency': ['how many times', 'keep getting calls', 'fed up'],
+            'not_interested': ['not interested', 'don\'t want this'],
+            'privacy_concern': ['private information', 'scam', 'confidential'],
+            'busy': ['busy right now', 'call back later', 'bad time'],
+            'cost_concern': ['too expensive', 'cannot afford', 'costs too much'],
+            'time_concern': ['takes too long', 'no time', 'in a hurry'],
+            'already_have': ['already have', 'don\'t need', 'have something similar'],
+            'need_to_think': ['need to think', 'consider', 'not right now'],
+            'need_more_info': ['more information', 'details', 'specifics'],
+            'ai_question': ['are you an AI', 'robot', 'automated', 'real person']
+        }
         
-        # Adding word count
-        df['word_count'] = df['content'].apply(lambda x: len(x.split()))
+        # Set up issue tracker
+        self.issue_summary = defaultdict(lambda: {'count': 0, 'examples': []})
+        self.MAX_EXAMPLES = 5
         
-        # Adding sequence number
-        df['sequence'] = range(1, len(df) + 1)
+    def load_transcript(self, json_str):
+        """Parse JSON transcript data into a pandas DataFrame"""
+        try:
+            transcript_data = json.loads(json_str)
+            df = pd.DataFrame(transcript_data)
+            
+            # Add useful metrics
+            df['message_length'] = df['content'].apply(len)
+            df['word_count'] = df['content'].apply(lambda x: len(str(x).split()))
+            df['sequence'] = range(1, len(df) + 1)
+            
+            # Convert timestamp to datetime if available
+            if 'time' in df.columns:
+                try:
+                    df['time'] = pd.to_datetime(df['time'])
+                except:
+                    pass
+                    
+            return df
+        except Exception as e:
+            print(f"Error processing transcript data: {e}")
+            return None
+    
+    def _increment_issue(self, issue_type, example=None):
+        """Track issues with examples for later reporting"""
+        self.issue_summary[issue_type]['count'] += 1
+        if example and len(self.issue_summary[issue_type]['examples']) < self.MAX_EXAMPLES:
+            self.issue_summary[issue_type]['examples'].append(example)
+    
+    def analyze_script_adherence(self, df):
+        """
+        Analyze how closely the agent followed the expected script based on keywords
+        """
+        adherence = {}
+        agent_msgs = df[df['role'] == 'agent']
+        user_msgs = df[df['role'] == 'user']
         
-        return df
-    except Exception as e:
-        print(f"Error processing transcript data: {e}")
-        return None
-    
-# Functions to analyze call transcript
-def analyze_script_adherence(df):
-    """Analyze how closely the agent followed the script based on the call script provided"""
-    # Defining script steps and their keywords based on the detailed script provided
-    script_steps = {
-        'step1_warm_welcome': ['Hi', 'hello', 'Amelia', 'Solar', 'Is that', 'speaking with'],
-        'step3_purpose_availability': ['federal government', 'solar rebate program', 'rebate', 'homeowners', 'install solar panels', 'qualify', 'minutes'],
-        'step4_qualify_customer': ['check if you qualify', 'own', 'address', 'solar panels', 'installed', 'roof', 'free-standing house', 'unit', 'apartment'],
-        'step5_free_assessment': ['free home assessment', 'solar expert', 'visit your place', 'no-obligation quote', 'analyze your bill', 'usage patterns', 'inspect your roof'],
-        'step6_closing_remarks': ['thank you for your time', 'keep you posted', 'future rebate', 'have a nice day', 'goodbye'],
-        'step7_thanks_close': ['thank you', 'have a nice day', 'goodbye'],
-        'communication_check': ['Are you still there', 'Hello', 'checking in'],
-        'objection_handling': ['apologize', 'sorry', 'understand', 'concern', 'misunderstanding', 'budget', 'not selling', 'no obligation']
-    }
-    
-    # Objection types from the script
-    objection_types = {
-        'wrong_information': ['wrong name', 'wrong information', 'incorrect details'],
-        'call_source': ['where are you calling from', 'call center', 'Green Energy Solar'],
-        'data_source': ['how did you get my', 'contact details', 'information'],
-        'call_frequency': ['how many times', 'keep getting calls', 'fed up'],
-        'not_interested': ['not interested', 'don\'t want this'],
-        'rebate_reason': ['why is the government giving', 'reason for this rebate'],
-        'government_call': ['calling from the government', 'government call'],
-        'affordability': ['cannot afford', 'don\'t have the budget', '0% interest'],
-        'rebate_amount': ['how much rebate', 'rebate amount', '30% of the total'],
-        'total_cost': ['how much will it cost', 'total cost', '6.6 kW system'],
-        'feed_in_tariff': ['feed-in tariff', 'cents per kWh'],
-        'company_name': ['name of your company', 'which company', 'Green Energy Solar'],
-        'privacy_concern': ['not give my first name', 'scam', 'need my address', 'confidential information'],
-        'renting': ['renting', 'don\'t own the house'],
-        'ai_question': ['are you an AI', 'robot'],
-        'availability': ['not sure if I\'ll be available', 'confirmation call', 'reschedule']
-    }
-    
-    # Check agent messages for script elements
-    adherence = {}
-    agent_msgs = df[df['role'] == 'agent']
-    user_msgs = df[df['role'] == 'user']
-    
-    for step, keywords in script_steps.items():
-        matches = []
-        for _, row in agent_msgs.iterrows():
-            content = row['content'].lower()
-            if any(keyword.lower() in content for keyword in keywords):
-                matches.append({
-                    'sequence': row['sequence'],
-                    'content': row['content']
-                })
+        # Check each script step
+        for step, keywords in self.script_steps.items():
+            matches = []
+            for _, row in agent_msgs.iterrows():
+                content = str(row['content']).lower()
+                if any(keyword.lower() in content for keyword in keywords):
+                    matches.append({
+                        'sequence': row['sequence'],
+                        'content': row['content']
+                    })
+            
+            adherence[step] = matches
+            
+            # Track adherence issues
+            if not matches:
+                self._increment_issue('missing_script_step', 
+                                     f"Agent didn't include {step} step in the conversation")
         
-        adherence[step] = matches
-    
-    # Check for objection handling
-    objection_handling = {}
-    for obj_type, keywords in objection_types.items():
-        matches = []
-        # Check for objections in user messages
-        for _, user_row in user_msgs.iterrows():
-            user_content = user_row['content'].lower()
-            if any(keyword.lower() in user_content for keyword in keywords):
-                # Look for agent response in next messages
-                next_agent_msgs = agent_msgs[agent_msgs['sequence'] > user_row['sequence']].head(2)
-                if not next_agent_msgs.empty:
-                    for _, agent_row in next_agent_msgs.iterrows():
-                        matches.append({
-                            'objection_sequence': user_row['sequence'],
-                            'objection_content': user_row['content'],
-                            'response_sequence': agent_row['sequence'],
-                            'response_content': agent_row['content']
-                        })
-                        break
+        # Analyze objection handling
+        objection_handling = {}
+        for obj_type, keywords in self.objection_types.items():
+            matches = []
+            for _, user_row in user_msgs.iterrows():
+                user_content = str(user_row['content']).lower()
+                if any(keyword.lower() in user_content for keyword in keywords):
+                    # Find next agent response after this objection
+                    next_agent_msgs = agent_msgs[agent_msgs['sequence'] > user_row['sequence']].head(2)
+                    if not next_agent_msgs.empty:
+                        for _, agent_row in next_agent_msgs.iterrows():
+                            matches.append({
+                                'objection_sequence': user_row['sequence'],
+                                'objection_content': user_row['content'],
+                                'response_sequence': agent_row['sequence'],
+                                'response_content': agent_row['content']
+                            })
+                            break
+            
+            objection_handling[obj_type] = matches
         
-        objection_handling[obj_type] = matches
-    
-    adherence['objection_handling_detailed'] = objection_handling
-    
-    # Check for interruptions
-    interruptions = df[df['event'] == 'agent_stopped_speaking']
-    if not interruptions.empty:
-        adherence['interruptions'] = interruptions[['sequence', 'content']].to_dict('records')
-    else:
-        adherence['interruptions'] = []
-    
-    # Check for communication issues
-    communication_issues = []
-    for _, row in user_msgs.iterrows():
-        content = row['content'].lower()
-        if content == "hello?" or "hello" in content:
-            # Find preceding agent message
-            preceding_msgs = agent_msgs[agent_msgs['sequence'] < row['sequence']].tail(1)
-            if not preceding_msgs.empty:
-                communication_issues.append({
-                    'user_sequence': row['sequence'],
-                    'user_content': row['content'],
-                    'agent_sequence': preceding_msgs.iloc[0]['sequence'],
-                    'agent_content': preceding_msgs.iloc[0]['content']
-                })
-    
-    adherence['communication_issues'] = communication_issues
-    
-    return adherence
-
-def analyze_script_flow(df, adherence):
-    """Analyze if the script flow followed the correct sequence"""
-    # Check if script steps happened in the correct order
-    expected_order = [
-        'step1_warm_welcome',
-        'step3_purpose_availability', 
-        'step4_qualify_customer',
-        'step5_free_assessment',
-        'step6_closing_remarks',
-        'step7_thanks_close'
-    ]
-    
-    actual_order = []
-    for step in expected_order:
-        if step in adherence and adherence[step]:
-            min_seq = min([m['sequence'] for m in adherence[step]])
-            actual_order.append((step, min_seq))
-    
-    # Sort by sequence number
-    actual_order.sort(key=lambda x: x[1])
-    
-    # Check if any steps were skipped
-    skipped_steps = [step for step in expected_order if step not in [a[0] for a in actual_order]]
-    
-    # Check if steps happened out of order
-    actual_step_order = [a[0] for a in actual_order]
-    expected_indices = {step: i for i, step in enumerate(expected_order)}
-    
-    out_of_order = False
-    for i in range(len(actual_step_order) - 1):
-        if expected_indices[actual_step_order[i]] > expected_indices[actual_step_order[i+1]]:
-            out_of_order = True
-            break
-    
-    # Check if proper customer qualification flow was followed
-    qualification_flow_correct = False
-    
-    # Check if Step 4 was followed by either Step 5 (if qualified) or Step 6 (if not qualified)
-    if 'step4_qualify_customer' in [a[0] for a in actual_order]:
-        step4_idx = [i for i, a in enumerate(actual_order) if a[0] == 'step4_qualify_customer'][0]
+        adherence['objection_handling_detailed'] = objection_handling
         
-        if step4_idx < len(actual_order) - 1:
-            next_step = actual_order[step4_idx + 1][0]
-            if next_step in ['step5_free_assessment', 'step6_closing_remarks']:
-                qualification_flow_correct = True
-    
-    return {
-        'actual_order': actual_order,
-        'skipped_steps': skipped_steps,
-        'out_of_order': out_of_order,
-        'qualification_flow_correct': qualification_flow_correct
-    }
-    
-def identify_script_deviations(df, adherence):
-    """Identify deviations from the script based on call content"""
-    deviations = []
-    
-    # Check if proper name verification was done
-    if 'step1_warm_welcome' in adherence and adherence['step1_warm_welcome']:
-        name_verification = False
-        for item in adherence['step1_warm_welcome']:
-            if "is that" in item['content'].lower() or "speaking with" in item['content'].lower():
-                name_verification = True
-                break
+        # Check for interruptions if that data is available
+        interruptions = df[df['event'] == 'agent_stopped_speaking'] if 'event' in df.columns else pd.DataFrame()
+        if not interruptions.empty:
+            adherence['interruptions'] = interruptions[['sequence', 'content']].to_dict('records')
+            
+            # Track interruption issues
+            if len(interruptions) > 2:
+                self._increment_issue('excessive_interruptions',
+                                    f"Agent was interrupted {len(interruptions)} times")
+        else:
+            adherence['interruptions'] = []
         
-        if not name_verification:
-            deviations.append({
-                'type': 'missing_name_verification',
-                'description': 'Agent did not properly verify customer name as per script'
-            })
+        # Check for communication breakdown indicators
+        communication_issues = []
+        for _, row in user_msgs.iterrows():
+            content = str(row['content']).lower()
+            if content in ["hello?", "are you there?"] or (len(content) < 10 and "hello" in content):
+                preceding_msgs = agent_msgs[agent_msgs['sequence'] < row['sequence']].tail(1)
+                if not preceding_msgs.empty:
+                    communication_issues.append({
+                        'user_sequence': row['sequence'],
+                        'user_content': row['content'],
+                        'agent_sequence': preceding_msgs.iloc[0]['sequence'],
+                        'agent_content': preceding_msgs.iloc[0]['content']
+                    })
+                    
+                    # Track communication breakdown issues
+                    self._increment_issue('communication_breakdown',
+                                        f"Customer asked '{row['content']}' indicating they may not have heard the agent")
+        
+        adherence['communication_issues'] = communication_issues
+        
+        return adherence
     
-    # Check repeated "Are you still there?" messages
-    still_there_count = 0
-    for _, row in df[df['role'] == 'agent'].iterrows():
-        if "are you still there" in row['content'].lower():
-            still_there_count += 1
+    def analyze_script_flow(self, df, adherence):
+        """
+        Analyze if the script flow followed a logical sequence
+        """
+        # The expected flow of a typical conversation
+        expected_order = [
+            'greeting',
+            'introduction',
+            'purpose',
+            'qualification',
+            'information',
+            'objection_handling',
+            'closing'
+        ]
+        
+        # Map the actual order of steps found in the conversation
+        actual_order = []
+        for step in expected_order:
+            if step in adherence and adherence[step]:
+                min_seq = min([m['sequence'] for m in adherence[step]])
+                actual_order.append((step, min_seq))
+        
+        # Sort by sequence to see the actual flow
+        actual_order.sort(key=lambda x: x[1])
+        
+        # Identify skipped steps
+        skipped_steps = [step for step in expected_order if step not in [a[0] for a in actual_order]]
+        
+        # Check if steps happened out of expected order
+        actual_step_order = [a[0] for a in actual_order]
+        expected_indices = {step: i for i, step in enumerate(expected_order)}
+        
+        out_of_order = False
+        out_of_order_details = []
+        
+        for i in range(len(actual_step_order) - 1):
+            if expected_indices[actual_step_order[i]] > expected_indices[actual_step_order[i+1]]:
+                out_of_order = True
+                out_of_order_details.append(f"{actual_step_order[i+1]} came before {actual_step_order[i]}")
+                
+                # Track flow issues
+                self._increment_issue('out_of_order_steps',
+                                    f"{actual_step_order[i+1]} came before {actual_step_order[i]}")
+        
+        # Check if key conversation patterns were followed
+        greeting_before_purpose = False
+        if 'greeting' in [a[0] for a in actual_order] and 'purpose' in [a[0] for a in actual_order]:
+            greeting_idx = next(i for i, a in enumerate(actual_order) if a[0] == 'greeting')
+            purpose_idx = next(i for i, a in enumerate(actual_order) if a[0] == 'purpose')
+            greeting_before_purpose = greeting_idx < purpose_idx
+        
+        return {
+            'actual_order': actual_order,
+            'skipped_steps': skipped_steps,
+            'out_of_order': out_of_order,
+            'out_of_order_details': out_of_order_details,
+            'greeting_before_purpose': greeting_before_purpose
+        }
     
-    if still_there_count > 2:
-        deviations.append({
-            'type': 'excessive_checking',
-            'description': f'Agent asked "Are you still there?" {still_there_count} times, indicating communication issues'
-        })
-    
-    # Check if address verification was done as required in Step 4
-    address_verification = False
-    for _, row in df[df['role'] == 'agent'].iterrows():
-        content = row['content'].lower()
-        if any(term in content for term in ["address", "street", "suburb", "state", "pincode"]):
-            address_verification = True
-            break
-    
-    if not address_verification and 'step4_qualify_customer' in adherence and adherence['step4_qualify_customer']:
-        deviations.append({
-            'type': 'incomplete_qualification',
-            'description': 'Agent did not verify address as required in Step 4'
-        })
-    
-    # Check if roof verification was done as required in Step 4
-    roof_check = False
-    solar_panel_check = False
-    freestanding_check = False
-    
-    for _, row in df[df['role'] == 'agent'].iterrows():
-        content = row['content'].lower()
-        if "roof" in content:
-            roof_check = True
-        if "solar panels" in content:
-            solar_panel_check = True
-        if any(term in content for term in ["free-standing", "unit", "apartment"]):
-            freestanding_check = True
-    
-    if 'step4_qualify_customer' in adherence and adherence['step4_qualify_customer']:
-        if not roof_check:
-            deviations.append({
-                'type': 'incomplete_qualification',
-                'description': 'Agent did not verify if customer has a suitable roof for solar panels'
-            })
-        if not solar_panel_check:
-            deviations.append({
-                'type': 'incomplete_qualification',
-                'description': 'Agent did not ask if customer already has solar panels installed'
-            })
-        if not freestanding_check:
-            deviations.append({
-                'type': 'incomplete_qualification',
-                'description': 'Agent did not verify if property is a free-standing house'
-            })
-    
-    # Check if free home assessment was offered to qualified customers (Step 5)
-    if 'step4_qualify_customer' in adherence and adherence['step4_qualify_customer'] and 'step5_free_assessment' not in adherence:
-        deviations.append({
-            'type': 'missing_free_assessment',
-            'description': 'Agent qualified the customer but did not offer the free home assessment'
-        })
-    
-    # Check for proper closing remarks (Step 6 or 7)
-    if ('step6_closing_remarks' not in adherence or not adherence['step6_closing_remarks']) and \
-       ('step7_thanks_close' not in adherence or not adherence['step7_thanks_close']):
-        deviations.append({
-            'type': 'improper_call_closure',
-            'description': 'Call ended without proper closing remarks as per script Steps 6 or 7'
-        })
-    
-    # Check for objection handling
-    objection_found = False
-    objection_handled = False
-    
-    for obj_type, matches in adherence.get('objection_handling_detailed', {}).items():
-        if matches:
-            objection_found = True
-            # Check if agent response contains appropriate handling language
+    def analyze_objection_handling(self, df, adherence):
+        """
+        Analyze how well objections were handled in the conversation
+        """
+        objection_analysis = {
+            'objections_identified': 0,
+            'properly_handled': 0,
+            'poorly_handled': 0,
+            'details': []
+        }
+        
+        # Common keywords that indicate good objection handling
+        good_handling_keywords = [
+            'understand', 'apologize', 'sorry', 'concern', 
+            'let me clarify', 'good question', 'that\'s a great point', 
+            'i hear you', 'valid concern', 'appreciate'
+        ]
+        
+        for obj_type, matches in adherence.get('objection_handling_detailed', {}).items():
             for match in matches:
-                response = match['response_content'].lower()
-                if any(keyword in response for keyword in ['understand', 'apologize', 'sorry', 'no obligation', 'not selling']):
-                    objection_handled = True
-                    break
-    
-    if objection_found and not objection_handled:
-        deviations.append({
-            'type': 'poor_objection_handling',
-            'description': 'Agent did not handle customer objections according to script guidelines'
-        })
-    
-    return deviations
-
-def analyze_objection_handling(df, adherence):
-    """Analyze how well objections were handled according to script guidelines"""
-    objection_analysis = {
-        'objections_identified': 0,
-        'properly_handled': 0,
-        'poorly_handled': 0,
-        'details': []
-    }
-    
-    # Examine each objection type
-    for obj_type, matches in adherence.get('objection_handling_detailed', {}).items():
-        for match in matches:
-            objection_analysis['objections_identified'] += 1
-            
-            # Check if response follows script guidelines
-            response = match['response_content'].lower()
-            objection = match['objection_content'].lower()
-            
-            # Define expected responses for common objections
-            expected_responses = {
-                'wrong_information': ['apologize', 'technical glitch', 'correct number'],
-                'call_source': ['melbourne', 'green energy solar'],
-                'not_interested': ['misunderstanding', 'not selling', 'no-obligation', 'assessment'],
-                'affordability': ['30%', 'government', 'rebate', '0% interest', 'finance'],
-                'privacy_concern': ['understand', 'concern', 'confidential', 'inform']
-            }
-            
-            # Check if response contains expected elements
-            handled_properly = False
-            
-            # Check for generic good response patterns
-            if any(term in response for term in ['understand', 'apologize', 'sorry']):
-                handled_properly = True
-            
-            # Check for specific response patterns based on objection type
-            for obj_key, expected_terms in expected_responses.items():
-                if obj_key in obj_type and any(term in response for term in expected_terms):
-                    handled_properly = True
-                    break
-            
-            if handled_properly:
-                objection_analysis['properly_handled'] += 1
-            else:
-                objection_analysis['poorly_handled'] += 1
-            
-            objection_analysis['details'].append({
-                'objection_type': obj_type,
-                'objection': objection,
-                'response': response,
-                'handled_properly': handled_properly,
-                'sequence': match['objection_sequence']
-            })
-    
-    return objection_analysis
-
-def check_qualification_process(df, adherence):
-    """Check if the qualification process was followed correctly"""
-    qualification_analysis = {
-        'address_verification': False,
-        'solar_panels_check': False,
-        'property_type_check': False,
-        'under_75_age_check': False,
-        'bill_amount_check': False,
-        'sunlight_check': False,
-        'second_contact_check': False,
-        'complete': False,
-        'details': []
-    }
-    
-    # Check for address verification
-    for _, row in df[df['role'] == 'agent'].iterrows():
-        content = row['content'].lower()
+                objection_analysis['objections_identified'] += 1
+                response = str(match['response_content']).lower()
+                objection = str(match['objection_content']).lower()
+                
+                # Check if the response contains good handling indicators
+                handled_properly = any(keyword in response for keyword in good_handling_keywords)
+                
+                # Check if the response is substantive (not too short)
+                if len(response.split()) < 10:
+                    handled_properly = False
+                    self._increment_issue('short_objection_response',
+                                        f"Short response to objection: '{objection}' → '{response}'")
+                
+                if handled_properly:
+                    objection_analysis['properly_handled'] += 1
+                else:
+                    objection_analysis['poorly_handled'] += 1
+                    
+                    # Track poorly handled objections
+                    self._increment_issue('poorly_handled_objection',
+                                        f"Poor handling of {obj_type}: '{objection}' → '{response}'")
+                
+                objection_analysis['details'].append({
+                    'objection_type': obj_type,
+                    'objection': objection,
+                    'response': response,
+                    'handled_properly': handled_properly,
+                    'sequence': match['objection_sequence']
+                })
         
-        # Check for address verification
-        if any(term in content for term in ["address", "street", "suburb", "state", "pincode"]):
-            qualification_analysis['address_verification'] = True
-            qualification_analysis['details'].append({
-                'check_type': 'address_verification',
-                'sequence': row['sequence'],
-                'content': row['content']
-            })
+        return objection_analysis
+    
+    def analyze_communication_quality(self, df):
+        """
+        Analyze the quality of communication in the call
+        """
+        quality_metrics = {
+            'agent_avg_words': df[df['role'] == 'agent']['word_count'].mean(),
+            'user_avg_words': df[df['role'] == 'user']['word_count'].mean(),
+            'agent_longest_message': df[df['role'] == 'agent']['word_count'].max(),
+            'user_longest_message': df[df['role'] == 'user']['word_count'].max(),
+            'problems': []
+        }
         
-        # Check for solar panels question
-        if "solar panels" in content and ("roof" in content or "installed" in content):
-            qualification_analysis['solar_panels_check'] = True
-            qualification_analysis['details'].append({
-                'check_type': 'solar_panels_check',
-                'sequence': row['sequence'],
-                'content': row['content']
+        # Check for very short agent responses
+        short_responses = df[(df['role'] == 'agent') & (df['word_count'] < 5)].shape[0]
+        if short_responses > 2:
+            quality_metrics['problems'].append({
+                'type': 'too_many_short_responses',
+                'description': f'Agent had {short_responses} very short responses (under 5 words)'
             })
+            self._increment_issue('short_agent_responses',
+                                 f"Agent had {short_responses} responses under 5 words")
         
-        # Check for property type question
-        if "free-standing" in content or "unit" in content or "apartment" in content:
-            qualification_analysis['property_type_check'] = True
-            qualification_analysis['details'].append({
-                'check_type': 'property_type_check',
-                'sequence': row['sequence'],
-                'content': row['content']
+        # Check for very long agent responses
+        long_responses = df[(df['role'] == 'agent') & (df['word_count'] > 100)].shape[0]
+        if long_responses > 2:
+            quality_metrics['problems'].append({
+                'type': 'too_many_long_responses',
+                'description': f'Agent had {long_responses} very long responses (over 100 words)'
             })
+            self._increment_issue('long_agent_responses',
+                                 f"Agent had {long_responses} responses over 100 words")
         
-        # Check for age verification
-        if "75" in content or "age" in content:
-            qualification_analysis['under_75_age_check'] = True
-            qualification_analysis['details'].append({
-                'check_type': 'under_75_age_check',
-                'sequence': row['sequence'],
-                'content': row['content']
+        # Check for repeated messages from the agent
+        agent_messages = df[df['role'] == 'agent']['content'].str.lower().tolist()
+        repeated_messages = [msg for msg, count in Counter(agent_messages).items() if count > 1]
+        if repeated_messages:
+            quality_metrics['problems'].append({
+                'type': 'repeated_messages',
+                'description': f'Agent repeated {len(repeated_messages)} messages verbatim'
+            })
+            self._increment_issue('agent_message_repetition',
+                                 f"Agent repeated messages verbatim {len(repeated_messages)} times")
+        
+        # Check for rapid-fire messages (multiple consecutive messages)
+        rapid_fire_count = 0
+        for i in range(1, len(df)):
+            if df.iloc[i]['role'] == 'agent' and df.iloc[i-1]['role'] == 'agent':
+                rapid_fire_count += 1
+        
+        if rapid_fire_count > 2:
+            quality_metrics['problems'].append({
+                'type': 'rapid_fire_messages',
+                'description': f'Agent sent {rapid_fire_count} consecutive messages without waiting for user response'
+            })
+            self._increment_issue('rapid_fire_messages',
+                                 f"Agent sent consecutive messages {rapid_fire_count} times")
+        
+        # Check if call ended properly
+        if df.iloc[-1]['role'] != 'agent' or 'goodbye' not in str(df.iloc[-1]['content']).lower():
+            quality_metrics['problems'].append({
+                'type': 'improper_call_ending',
+                'description': 'Call did not end with the agent saying goodbye'
+            })
+            self._increment_issue('improper_call_ending',
+                                 "Call didn't end with agent farewell")
+        
+        return quality_metrics
+    
+    def identify_potential_improvements(self, df, adherence, flow_analysis, objection_analysis, quality_metrics):
+        """
+        Identify potential improvements for the AI agent
+        """
+        improvements = []
+        
+        # Check script compliance
+        if flow_analysis['skipped_steps']:
+            skipped = ", ".join(flow_analysis['skipped_steps'])
+            improvements.append({
+                'area': 'script_compliance',
+                'improvement': f'Include all required script steps (missing: {skipped})'
             })
         
-        # Check for bill amount
-        if "bill" in content and ("quarter" in content or "$" in content):
-            qualification_analysis['bill_amount_check'] = True
-            qualification_analysis['details'].append({
-                'check_type': 'bill_amount_check',
-                'sequence': row['sequence'],
-                'content': row['content']
+        if flow_analysis['out_of_order']:
+            improvements.append({
+                'area': 'script_compliance',
+                'improvement': 'Follow the correct script sequence'
             })
         
-        # Check for sunlight question
-        if "sunlight" in content and "roof" in content:
-            qualification_analysis['sunlight_check'] = True
-            qualification_analysis['details'].append({
-                'check_type': 'sunlight_check',
-                'sequence': row['sequence'],
-                'content': row['content']
+        # Check objection handling
+        if objection_analysis['objections_identified'] > 0:
+            if objection_analysis['poorly_handled'] / objection_analysis['objections_identified'] > 0.3:
+                improvements.append({
+                    'area': 'objection_handling',
+                    'improvement': 'Improve responses to customer objections, acknowledge concerns more effectively'
+                })
+        
+        # Check communication quality
+        if any(p['type'] == 'too_many_short_responses' for p in quality_metrics['problems']):
+            improvements.append({
+                'area': 'communication_quality',
+                'improvement': 'Provide more comprehensive responses instead of very short answers'
             })
         
-        # Check for second contact
-        if "mobile" in content or "second point of contact" in content:
-            qualification_analysis['second_contact_check'] = True
-            qualification_analysis['details'].append({
-                'check_type': 'second_contact_check',
-                'sequence': row['sequence'],
-                'content': row['content']
+        if any(p['type'] == 'too_many_long_responses' for p in quality_metrics['problems']):
+            improvements.append({
+                'area': 'communication_quality',
+                'improvement': 'Make responses more concise and focused'
             })
-    
-    # Determine if qualification process was complete
-    basic_checks = [
-        qualification_analysis['address_verification'],
-        qualification_analysis['solar_panels_check'],
-        qualification_analysis['property_type_check']
-    ]
-    
-    additional_checks = [
-        qualification_analysis['under_75_age_check'],
-        qualification_analysis['bill_amount_check'],
-        qualification_analysis['sunlight_check'],
-        qualification_analysis['second_contact_check']
-    ]
-    
-    # Basic qualification requires all basic checks
-    basic_qualification = all(basic_checks)
-    
-    # Full qualification requires basic qualification and at least some of the additional checks
-    # (Not all may be necessary depending on the call flow)
-    full_qualification = basic_qualification and sum(additional_checks) >= 2
-    
-    qualification_analysis['complete'] = full_qualification
-    
-    return qualification_analysis
-
-def analyze_communication_problems(df):
-    """Analyze communication problems in the call"""
-    problems = []
-    
-    # Check for repeated user messages indicating they can't hear
-    hello_count = 0
-    for _, row in df[df['role'] == 'user'].iterrows():
-        if "hello" in row['content'].lower():
-            hello_count += 1
-    
-    if hello_count > 2:
-        problems.append({
-            'type': 'customer_hearing_issues',
-            'description': f'Customer said "Hello" {hello_count} times, indicating they could not hear the agent clearly'
-        })
-    
-    # Check for repeated agent checking messages
-    checking_count = 0
-    for _, row in df[df['role'] == 'agent'].iterrows():
-        if "are you still there" in row['content'].lower() or "checking in" in row['content'].lower():
-            checking_count += 1
-    
-    if checking_count > 2:
-        problems.append({
-            'type': 'agent_connection_issues',
-            'description': f'Agent checked if customer was there {checking_count} times, indicating connection problems'
-        })
-    
-    # Check if agent was interrupted
-    interruptions = df[df['event'] == 'agent_stopped_speaking']
-    if not interruptions.empty:
-        problems.append({
-            'type': 'agent_interrupted',
-            'description': f'Agent was interrupted {len(interruptions)} time(s), indicating potential call quality issues'
-        })
-    
-    # Check for abrupt call ending
-    last_message = df.iloc[-1]
-    if last_message['role'] == 'agent' and "goodbye" in last_message['content'].lower():
-        # Check if there was proper closure before goodbye
-        proper_closure = False
-        for i in range(len(df) - 2, max(0, len(df) - 5), -1):
-            if df.iloc[i]['role'] == 'agent' and any(keyword in df.iloc[i]['content'].lower() for keyword in ['thank you', 'thanks for your time']):
-                proper_closure = True
-                break
         
-        if not proper_closure:
-            problems.append({
-                'type': 'abrupt_call_ending',
-                'description': 'Call ended abruptly without proper closure as per script'
+        if any(p['type'] == 'repeated_messages' for p in quality_metrics['problems']):
+            improvements.append({
+                'area': 'communication_quality',
+                'improvement': 'Avoid repeating the same message verbatim'
             })
+        
+        if any(p['type'] == 'rapid_fire_messages' for p in quality_metrics['problems']):
+            improvements.append({
+                'area': 'communication_quality',
+                'improvement': 'Wait for customer responses instead of sending multiple consecutive messages'
+            })
+        
+        if any(p['type'] == 'improper_call_ending' for p in quality_metrics['problems']):
+            improvements.append({
+                'area': 'communication_quality',
+                'improvement': 'Always end calls with a proper farewell'
+            })
+        
+        # Check for communication issues
+        if 'communication_issues' in adherence and adherence['communication_issues']:
+            improvements.append({
+                'area': 'communication_clarity',
+                'improvement': 'Improve clarity as customer needed to ask "hello?" multiple times'
+            })
+        
+        # Check interruptions
+        if 'interruptions' in adherence and len(adherence['interruptions']) > 0:
+            improvements.append({
+                'area': 'communication_style',
+                'improvement': 'Allow customer to finish speaking before responding'
+            })
+        
+        return improvements
     
-    return problems
-
-def visualize_analysis(df, adherence, flow_analysis, deviations, problems):
-    """Create visualizations for the call analysis"""
-    # Create figure with subplots
-    fig = plt.figure(figsize=(15, 15))
-    
-    # 1. Message distribution grid
-    ax1 = plt.subplot2grid((3, 2), (0, 0))
-    role_counts = df['role'].value_counts()
-    ax1.bar(role_counts.index, role_counts.values, color=['#3498db', '#e74c3c'])
-    ax1.set_title('Message Count by Role')
-    ax1.set_ylabel('Number of Messages')
-    
-    # 2. Message length by sequence
-    ax2 = plt.subplot2grid((3, 2), (0, 1))
-    for i, row in df.iterrows():
-        color = '#3498db' if row['role'] == 'agent' else '#e74c3c'
-        ax2.scatter(row['sequence'], row['word_count'], color=color, s=100)
-    
-    # Add regression line
-    sns.regplot(x='sequence', y='word_count', data=df, ax=ax2, scatter=False, color='gray')
-    
-    ax2.set_xlabel('Message Sequence')
-    ax2.set_ylabel('Word Count')
-    ax2.set_title('Message Length Throughout Conversation')
-    ax2.legend(['Agent', 'Customer'], loc='upper right')
-    
-    # 3. Script adherence visualization
-    ax3 = plt.subplot2grid((3, 2), (1, 0), colspan=2)
-    steps = list(adherence.keys())
-    step_counts = [len(adherence[step]) for step in steps]
-    
-    # Only plot actual script steps (not issues)
-    script_steps = [step for step in steps if step not in ['interruptions', 'communication_issues']]
-    script_counts = [len(adherence[step]) for step in script_steps]
-    
-    ax3.barh(script_steps, script_counts, color='#9b59b6')
-    ax3.set_title('Script Steps Adherence')
-    ax3.set_xlabel('Number of Occurrences')
-    
-    # 4. Communication issues timeline
-    ax4 = plt.subplot2grid((3, 2), (2, 0), colspan=2)
-    
-    # Plot user responses
-    user_seq = df[df['role'] == 'user']['sequence'].tolist()
-    user_y = [0.3] * len(user_seq)
-    ax4.scatter(user_seq, user_y, color='#e74c3c', s=80, marker='o', label='User')
-    
-    # Plot agent messages
-    agent_seq = df[df['role'] == 'agent']['sequence'].tolist()
-    agent_y = [0.7] * len(agent_seq)
-    ax4.scatter(agent_seq, agent_y, color='#3498db', s=80, marker='o', label='Agent')
-    
-    # Highlight communication issues
-    if 'communication_issues' in adherence:
-        for issue in adherence['communication_issues']:
-            ax4.axvspan(issue['agent_sequence'], issue['user_sequence'], alpha=0.2, color='yellow')
-    
-    # Highlight interruptions
-    if 'interruptions' in adherence and adherence['interruptions']:
-        for interruption in adherence['interruptions']:
-            ax4.axvline(x=interruption['sequence'], color='red', linestyle='--', alpha=0.7)
-    
-    ax4.set_title('Communication Issues Timeline')
-    ax4.set_xlabel('Message Sequence')
-    ax4.set_yticks([0.3, 0.7])
-    ax4.set_yticklabels(['User', 'Agent'])
-    ax4.set_ylim(0, 1)
-    ax4.legend()
-    
-    plt.tight_layout()
-    plt.savefig('call_analysis.png')
-    print("Visualization saved as 'call_analysis.png'")
-    plt.close()
-    
-def generate_report(df, adherence, flow_analysis, deviations, problems, objection_analysis, qualification_analysis):
-    """Generate a comprehensive analysis report with detailed script adherence metrics"""
-    # Basic statistics
-    total_messages = len(df)
-    agent_messages = len(df[df['role'] == 'agent'])
-    user_messages = len(df[df['role'] == 'user'])
-    
-    # Calculate average message lengths
-    avg_agent_words = df[df['role'] == 'agent']['word_count'].mean()
-    avg_user_words = df[df['role'] == 'user']['word_count'].mean()
-    
-    # Script adherence summary
-    script_steps = {
-        'step1_warm_welcome': 'Step 1 - Warm Welcome',
-        'step3_purpose_availability': 'Step 3 - Purpose and Availability',
-        'step4_qualify_customer': 'Step 4 - Customer Qualification',
-        'step5_free_assessment': 'Step 5 - Free Home Assessment',
-        'step6_closing_remarks': 'Step 6 - Closing Remarks',
-        'step7_thanks_close': 'Step 7 - Thanks and Close'
-    }
-    
-    adherence_summary = {script_steps[step]: len(matches) for step, matches in adherence.items() 
-                        if step in script_steps}
-    
-    # Generate the report
-    report = f"""
-# Solar Call Analysis Report
+    def generate_report(self, df, adherence, flow_analysis, objection_analysis, quality_metrics, improvements):
+        """
+        Generate a comprehensive analysis report
+        """
+        total_messages = len(df)
+        agent_messages = len(df[df['role'] == 'agent'])
+        user_messages = len(df[df['role'] == 'user'])
+        
+        report = f"""
+# Call Analysis Report
 
 ## Call Summary
 - Total messages: {total_messages}
 - Agent messages: {agent_messages}
 - Customer messages: {user_messages}
-- Average agent message length: {avg_agent_words:.1f} words
-- Average customer message length: {avg_user_words:.1f} words
+- Average agent message length: {quality_metrics['agent_avg_words']:.1f} words
+- Average customer message length: {quality_metrics['user_avg_words']:.1f} words
 - Call date: {df['time'].iloc[0].date() if 'time' in df.columns else 'N/A'}
 
 ## Script Adherence Summary
 """
-    
-    # Add script steps summary
-    for step_name, count in adherence_summary.items():
-        report += f"- {step_name}: {'✓' if count > 0 else '✗'} ({count} instances)\n"
-    
-    # Add script flow analysis
-    report += """
+        # Script step coverage
+        for step, matches in adherence.items():
+            if step not in ['objection_handling_detailed', 'interruptions', 'communication_issues']:
+                report += f"- {step.replace('_', ' ').title()}: {'✓' if matches else '✗'} ({len(matches)} instances)\n"
+        
+        report += """
 ## Script Flow Analysis
 """
-    
-    if flow_analysis['skipped_steps']:
-        skipped = ', '.join([script_steps.get(step, step) for step in flow_analysis['skipped_steps']])
-        report += f"- **Skipped Steps**: {skipped}\n"
-    else:
-        report += "- No steps were skipped\n"
-    
-    if flow_analysis['out_of_order']:
-        report += "- **Issue**: Script steps were executed out of order\n"
-    else:
-        report += "- Steps were executed in the correct order\n"
-    
-    if flow_analysis.get('qualification_flow_correct', False):
-        report += "- Customer qualification flow was followed correctly\n"
-    else:
-        report += "- **Issue**: Customer qualification flow was not followed correctly\n"
-    
-    # Add qualification process analysis
-    report += """
-## Qualification Process Analysis
-"""
-    
-    report += f"- Address verification: {'✓' if qualification_analysis['address_verification'] else '✗'}\n"
-    report += f"- Solar panels check: {'✓' if qualification_analysis['solar_panels_check'] else '✗'}\n"
-    report += f"- Property type check: {'✓' if qualification_analysis['property_type_check'] else '✗'}\n"
-    
-    if 'step5_free_assessment' in adherence and adherence['step5_free_assessment']:
-        report += f"- Age verification (under 75): {'✓' if qualification_analysis['under_75_age_check'] else '✗'}\n"
-        report += f"- Bill amount check: {'✓' if qualification_analysis['bill_amount_check'] else '✗'}\n"
-        report += f"- Sunlight on roof check: {'✓' if qualification_analysis['sunlight_check'] else '✗'}\n"
-        report += f"- Second contact point: {'✓' if qualification_analysis['second_contact_check'] else '✗'}\n"
-    
-    report += f"- **Overall qualification process**: {'Complete' if qualification_analysis['complete'] else 'Incomplete'}\n"
-    
-    report += """
+        if flow_analysis['skipped_steps']:
+            skipped = ', '.join(flow_analysis['skipped_steps'])
+            report += f"- **Skipped Steps**: {skipped}\n"
+        else:
+            report += "- No steps were skipped\n"
+        
+        if flow_analysis['out_of_order']:
+            report += "- **Issue**: Script steps were executed out of order\n"
+            for detail in flow_analysis['out_of_order_details']:
+                report += f"  - {detail}\n"
+        else:
+            report += "- Steps were executed in the correct order\n"
+        
+        report += """
 ## Objection Handling Analysis
 """
-    
-    if objection_analysis['objections_identified'] > 0:
-        report += f"- Total objections identified: {objection_analysis['objections_identified']}\n"
-        report += f"- Properly handled: {objection_analysis['properly_handled']} ({100 * objection_analysis['properly_handled'] / objection_analysis['objections_identified']:.1f}%)\n"
-        report += f"- Poorly handled: {objection_analysis['poorly_handled']}\n"
+        if objection_analysis['objections_identified'] > 0:
+            report += f"- Total objections identified: {objection_analysis['objections_identified']}\n"
+            proper_percent = 100 * objection_analysis['properly_handled'] / objection_analysis['objections_identified']
+            report += f"- Properly handled: {objection_analysis['properly_handled']} ({proper_percent:.1f}%)\n"
+            report += f"- Poorly handled: {objection_analysis['poorly_handled']}\n"
+            
+            if objection_analysis['details']:
+                report += "\n### Objection Details\n"
+                for detail in objection_analysis['details']:
+                    report += f"- **{detail['objection_type'].replace('_', ' ').title()}**: {'✓' if detail['handled_properly'] else '✗'}\n"
+                    report += f"  - Customer: \"{detail['objection']}\"\n"
+                    report += f"  - Agent: \"{detail['response']}\"\n"
+        else:
+            report += "- No customer objections identified in this call\n"
         
-        if objection_analysis['details']:
-            report += "\n### Objection Details\n"
-            for detail in objection_analysis['details']:
-                report += f"- **{detail['objection_type'].replace('_', ' ').title()}**: {'✓' if detail['handled_properly'] else '✗'}\n"
-                report += f"  - Customer: \"{detail['objection']}\"\n"
-                report += f"  - Agent: \"{detail['response']}\"\n"
-    else:
-        report += "- No customer objections identified in this call\n"
-    
-    report += """
-## Script Deviations
+        report += """
+## Communication Quality Issues
 """
-    
-    if deviations:
-        for deviation in deviations:
-            report += f"- **{deviation['type'].replace('_', ' ').title()}**: {deviation['description']}\n"
-    else:
-        report += "- No specific script deviations identified\n"
-    
-    report += """
-## Communication Problems
-"""
-    
-    if problems:
-        for problem in problems:
-            report += f"- **{problem['type'].replace('_', ' ').title()}**: {problem['description']}\n"
-    else:
-        report += "- No specific communication problems identified\n"
-    
-    if 'interruptions' in adherence and adherence['interruptions']:
-        report += f"\n- **Agent Interruptions**: {len(adherence['interruptions'])} instances where the agent was interrupted\n"
-    
-    if 'communication_issues' in adherence and adherence['communication_issues']:
-        report += f"\n- **Communication Issues**: {len(adherence['communication_issues'])} instances where the customer appeared to have trouble hearing the agent\n"
-    
-    report += """
-## Recommendations
-"""
-    
-    recommendations = []
-    
-    if flow_analysis['skipped_steps']:
-        recommendations.append("**Follow Complete Script**: Agent should follow all steps in the script without skipping any sections")
-    
-    if not qualification_analysis['complete']:
-        recommendations.append("**Complete Qualification Process**: Ensure all required qualification questions are asked")
-    
-    if objection_analysis['objections_identified'] > 0 and objection_analysis['poorly_handled'] > 0:
-        recommendations.append("**Improve Objection Handling**: Review script responses for common objections")
-    
-    if 'communication_issues' in adherence and adherence['communication_issues']:
-        recommendations.append("**Address Connection Issues**: When customer repeatedly says \"Hello?\", recognize and address connection problems")
-    
-    if not ('step6_closing_remarks' in adherence and adherence['step6_closing_remarks']) and not ('step7_thanks_close' in adherence and adherence['step7_thanks_close']):
-        recommendations.append("**Proper Call Closure**: Always end calls with proper closing remarks")
-    
-    if len(recommendations) == 0:
-        recommendations = [
-            "**Maintain Performance**: Continue following the script closely",
-            "**Regular Training**: Conduct refresher training on script requirements"
-        ]
-    
-    for i, rec in enumerate(recommendations, 1):
-        report += f"{i}. {rec}\n"
-    
-    report += """
-## Script Comparison Summary
-The script requires agents to:
-- Start with a warm welcome and verify customer name (Step 1)
-- Explain the purpose and check availability (Step 3)
-- Qualify the customer with specific qualifying questions (Step 4)
-- Offer free home assessment for qualified customers (Step 5)
-- Handle objections appropriately
-- Close the call properly (Step 6/7)
-
-This agent:
-"""
-    
-    performance_summary = []
-    
-    if 'step1_warm_welcome' in adherence and adherence['step1_warm_welcome']:
-        if any("is that" in item['content'].lower() for item in adherence['step1_warm_welcome']):
-            performance_summary.append("✓ Properly greeted and attempted to verify the customer name")
+        if quality_metrics['problems']:
+            for problem in quality_metrics['problems']:
+                report += f"- **{problem['type'].replace('_', ' ').title()}**: {problem['description']}\n"
         else:
-            performance_summary.append("⚠️ Greeted the customer but didn't properly verify the name")
-    else:
-        performance_summary.append("✗ Failed to properly greet the customer")
+            report += "- No specific communication quality issues identified\n"
+        
+        if 'interruptions' in adherence and adherence['interruptions']:
+            report += f"\n- **Agent Interruptions**: {len(adherence['interruptions'])} instances where the agent was interrupted\n"
+        
+        if 'communication_issues' in adherence and adherence['communication_issues']:
+            report += f"\n- **Communication Issues**: {len(adherence['communication_issues'])} instances where the customer appeared to have trouble hearing the agent\n"
+        
+        report += """
+## Recommended Improvements
+"""
+        for i, improvement in enumerate(improvements, 1):
+            report += f"{i}. **{improvement['area'].replace('_', ' ').title()}**: {improvement['improvement']}\n"
+        
+        report += """
+## Issue Summary
+"""
+        for issue_type, data in self.issue_summary.items():
+            report += f"- **{issue_type.replace('_', ' ').title()}** ({data['count']} instances)\n"
+            if data['examples']:
+                for example in data['examples']:
+                    report += f"  - {example}\n"
+        
+        return report
     
-    if 'step3_purpose_availability' in adherence and adherence['step3_purpose_availability']:
-        performance_summary.append("✓ Explained the purpose of the call (solar rebate program)")
-    else:
-        performance_summary.append("✗ Failed to properly explain the call purpose")
+    def analyze_transcript_from_json(self, json_str):
+        """
+        Analyze a transcript from JSON string and generate a report
+        """
+        print("Analyzing call transcript...")
+        
+        # Reset the issue tracker
+        self.issue_summary = defaultdict(lambda: {'count': 0, 'examples': []})
+        
+        # Load and process the transcript
+        df = self.load_transcript(json_str)
+        if df is None:
+            return "Failed to process transcript data"
+        
+        # Run all analyses
+        adherence = self.analyze_script_adherence(df)
+        flow_analysis = self.analyze_script_flow(df, adherence)
+        objection_analysis = self.analyze_objection_handling(df, adherence)
+        quality_metrics = self.analyze_communication_quality(df)
+        improvements = self.identify_potential_improvements(
+            df, adherence, flow_analysis, objection_analysis, quality_metrics)
+        
+        # Generate the report
+        print("Generating analysis report...")
+        report = self.generate_report(
+            df, adherence, flow_analysis, objection_analysis, quality_metrics, improvements)
+        
+        print("Analysis report generated")
+        print("\nAnalysis Complete! Key findings:")
+        print(f"- Found {len(df)} total messages ({len(df[df['role'] == 'agent'])} from agent, {len(df[df['role'] == 'user'])} from customer)")
+        if objection_analysis['objections_identified'] > 0:
+            print(f"- Customer objections: {objection_analysis['objections_identified']} (properly handled: {objection_analysis['properly_handled']})")
+        print(f"- Identified {len(improvements)} potential improvements")
+        
+        return report
     
-    qualification_status = "✓ " if qualification_analysis['complete'] else "⚠️ " if sum([
-        qualification_analysis['address_verification'],
-        qualification_analysis['solar_panels_check'],
-        qualification_analysis['property_type_check']
-    ]) > 0 else "✗ "
-    
-    qualification_text = "Completely qualified the customer with all required questions" if qualification_analysis['complete'] else \
-                         "Partially qualified the customer but missed some required questions" if sum([
-                             qualification_analysis['address_verification'],
-                             qualification_analysis['solar_panels_check'],
-                             qualification_analysis['property_type_check']
-                         ]) > 0 else "Failed to properly qualify the customer"
-    
-    performance_summary.append(f"{qualification_status}{qualification_text}")
-    
-    if 'step5_free_assessment' in adherence and adherence['step5_free_assessment']:
-        performance_summary.append("✓ Offered the free home assessment to the customer")
-    elif 'step4_qualify_customer' in adherence and adherence['step4_qualify_customer']:
-        performance_summary.append("✗ Qualified the customer but didn't offer the free home assessment")
-    
-    if objection_analysis['objections_identified'] > 0:
-        if objection_analysis['properly_handled'] == objection_analysis['objections_identified']:
-            performance_summary.append("✓ Properly handled all customer objections")
-        elif objection_analysis['properly_handled'] > 0:
-            performance_summary.append("⚠️ Handled some but not all customer objections appropriately")
-        else:
-            performance_summary.append("✗ Failed to properly handle customer objections")
-    
-    if ('step6_closing_remarks' in adherence and adherence['step6_closing_remarks']) or \
-       ('step7_thanks_close' in adherence and adherence['step7_thanks_close']):
-        performance_summary.append("✓ Properly closed the call according to script guidelines")
-    else:
-        performance_summary.append("✗ Did not properly close the call according to script guidelines")
-    
-    for point in performance_summary:
-        report += f"- {point}\n"
-    
-    return report
-
-def analyze_call_transcript(json_str):
-    """Main function to analyze the call transcript"""
-    print("Analyzing call transcript...")
-    
-    df = load_transcript(json_str)
-    
-    if df is None:
-        print("Failed to process transcript data")
-        return
-    
-    if 'time' in df.columns:
+    def fetch_transcript_from_url(self, url):
+        """Fetches transcript JSON from a URL"""
         try:
-            df['time'] = pd.to_datetime(df['time'])
-        except:
-            pass 
+            response = requests.get(url)
+            response.raise_for_status()
+            return response.text
+        except requests.RequestException as e:
+            print(f"Error fetching transcript from {url}: {e}")
+            return None
     
-    adherence = analyze_script_adherence(df)
-    flow_analysis = analyze_script_flow(df, adherence)
-    deviations = identify_script_deviations(df, adherence)
-    problems = analyze_communication_problems(df)
-    
-    objection_analysis = analyze_objection_handling(df, adherence)
-    qualification_analysis = check_qualification_process(df, adherence)
-    
-    try:
-        print("Creating visualizations...")
-        visualize_analysis(df, adherence, flow_analysis, deviations, problems)
-    except Exception as e:
-        print(f"Error creating visualizations: {e}")
-    
-    print("Generating analysis report...")
-    report = generate_report(
-        df, 
-        adherence, 
-        flow_analysis, 
-        deviations, 
-        problems, 
-        objection_analysis, 
-        qualification_analysis
-    )
-    
-    print("Analysis report generated")
-    
-    print("\nAnalysis Complete! Key findings:")
-    print(f"- Found {len(df)} total messages ({len(df[df['role'] == 'agent'])} from agent, {len(df[df['role'] == 'user'])} from customer)")
-    print(f"- Identified {len(deviations)} script deviations and {len(problems)} communication problems")
-    print(f"- Customer objections: {objection_analysis['objections_identified']} (properly handled: {objection_analysis['properly_handled']})")
-    print(f"- Qualification process: {'Complete' if qualification_analysis['complete'] else 'Incomplete'}")
-    
-    return report
-
-def fetch_transcript_from_url(url):
-    """
-    Fetches transcript JSON from a URL
-    """
-    try:
-        response = requests.get(url)
-        response.raise_for_status()
-        return response.text
-    except requests.RequestException as e:
-        print(f"Error fetching transcript from {url}: {e}")
+    def analyze_transcript_from_url(self, url):
+        """Fetch and analyze a transcript from a URL"""
+        json_str = self.fetch_transcript_from_url(url)
+        if json_str:
+            return self.analyze_transcript_from_json(json_str)
+        else:
+            return "Failed to fetch transcript from URL"
         return None
 
 class SolarCallAnalyzer:
@@ -1735,6 +1425,28 @@ def main():
         results = None
         # Part 1: Process transcripts from CSV
         try:
+            analyzer = CallAnalyzer()
+            solar_script_steps = {
+                'warm_welcome': ['Hi', 'hello', 'name is', 'speaking with'],
+                'purpose_availability': ['solar rebate program', 'rebate', 'homeowners', 'install solar panels', 'qualify'],
+                'qualify_customer': ['check if you qualify', 'own', 'address', 'solar panels', 'roof'],
+                'free_assessment': ['free home assessment', 'solar expert', 'visit your place', 'no-obligation quote'],
+                'closing_remarks': ['thank you for your time', 'keep you posted', 'have a nice day', 'goodbye']
+            }
+            
+            # For a customer service call
+            cs_script_steps = {
+                'greeting': ['thank you for calling', 'how may I help', 'speaking with'],
+                'identify_issue': ['issue', 'problem', 'concern', 'help with'],
+                'verification': ['verify', 'account', 'information', 'security'],
+                'problem_solving': ['resolve', 'solution', 'fix', 'address your concern'],
+                'closing': ['anything else', 'resolved', 'thank you', 'have a nice day']
+            }
+            
+            # Create specialized analyzers
+            solar_analyzer = CallAnalyzer(script_steps=solar_script_steps)
+            cs_analyzer = CallAnalyzer(script_steps=cs_script_steps)
+            
             df = pd.read_csv('data.csv')
             # Don't limit to specific rows when processing from API
             all_reports = {}
@@ -1750,10 +1462,12 @@ def main():
                     continue
                 
                 print(f"Processing transcript {transcript_id} from {transcript_url}")
-                json_str = fetch_transcript_from_url(transcript_url)
+                json_str = analyzer.fetch_transcript_from_url(transcript_url)
                 if json_str:
                     try:
-                        report_content = analyze_call_transcript(json_str)
+                        # Use the transcript_url variable here instead of undefined url
+                        report_content = analyzer.analyze_transcript_from_url(transcript_url)
+                        print(report_content)
                         all_reports[f'transcript_{transcript_id}_report'] = report_content
                         # Save the image with unique name
                         if os.path.exists('call_analysis.png'):
@@ -1800,9 +1514,6 @@ def main():
         if not chart_files:
             # Create a placeholder visualization if no charts were generated
             try:
-                import matplotlib.pyplot as plt
-                import numpy as np
-                
                 plt.figure(figsize=(10, 6))
                 plt.text(0.5, 0.5, "No visualization available for this transcript", 
                          ha='center', va='center', fontsize=14)

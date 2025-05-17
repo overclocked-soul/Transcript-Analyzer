@@ -31,7 +31,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const scriptContent = document.getElementById("script-content");
   const objectionsContent = document.getElementById("objections-content");
   const recsContent = document.getElementById("recs-content");
-//   const mainVisualization = document.getElementById("main-visualization");
+  //   const mainVisualization = document.getElementById("main-visualization");
   const additionalCharts = document.getElementById("additional-charts");
   const searchBox = document.getElementById("search-box");
 
@@ -307,7 +307,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     // Extract content for each tab
 
-    // Summary tab
+    // Summary tab - extract "Call Summary" section
     const summarySection = extractSection(
       tempElement,
       "Call Summary",
@@ -316,7 +316,7 @@ document.addEventListener("DOMContentLoaded", () => {
     summaryContent.innerHTML =
       summarySection || "<p>No summary information available.</p>";
 
-    // Script adherence tab
+    // Script adherence tab - extract both "Script Adherence Summary" and "Script Flow Analysis"
     const scriptSection = extractSection(
       tempElement,
       "Script Adherence",
@@ -325,18 +325,22 @@ document.addEventListener("DOMContentLoaded", () => {
     scriptContent.innerHTML =
       scriptSection || "<p>No script adherence information available.</p>";
 
-    // Objections tab
+    // Objections tab - extract "Objection Handling Analysis" and "Communication Quality Issues"
     const objectionsSection = extractSection(
       tempElement,
       "Objection Handling",
-      "Recommendations"
+      "Recommended Improvements"
     );
     objectionsContent.innerHTML =
       objectionsSection ||
       "<p>No objection handling information available.</p>";
 
-    // Recommendations tab
-    const recsSection = extractSection(tempElement, "Recommendations", null);
+    // Recommendations tab - extract both "Recommended Improvements" and "Issue Summary"
+    const recsSection = extractSection(
+      tempElement,
+      "Recommended Improvements",
+      null
+    );
     recsContent.innerHTML =
       recsSection || "<p>No recommendations available.</p>";
 
@@ -355,12 +359,11 @@ document.addEventListener("DOMContentLoaded", () => {
     let currentElement = element.firstChild;
 
     while (currentElement) {
-      // Check if this is the start heading
+      // Check if this is the start heading - look for partial matches in headings of any level
       if (
         !startFound &&
         currentElement.tagName &&
-        (currentElement.tagName.toLowerCase() === "h2" ||
-          currentElement.tagName.toLowerCase() === "h1") &&
+        currentElement.tagName.match(/^H[1-6]$/i) &&
         currentElement.textContent.includes(startHeading)
       ) {
         startFound = true;
@@ -368,12 +371,11 @@ document.addEventListener("DOMContentLoaded", () => {
       }
       // If we're in the section, add content until we reach the end heading
       else if (startFound) {
-        // Check if this is the end heading
+        // Check if this is the end heading - look for partial matches in headings of any level
         if (
           endHeading &&
           currentElement.tagName &&
-          (currentElement.tagName.toLowerCase() === "h2" ||
-            currentElement.tagName.toLowerCase() === "h1") &&
+          currentElement.tagName.match(/^H[1-6]$/i) &&
           currentElement.textContent.includes(endHeading)
         ) {
           break;
@@ -397,23 +399,19 @@ document.addEventListener("DOMContentLoaded", () => {
     //   additionalCharts.innerHTML = "";
     //   return;
     // }
-
     // // Make sure the first chart has a valid path
     // if (!charts[0] || !charts[0].path) {
     //   mainVisualization.innerHTML = "<p>Visualization data is incomplete.</p>";
     //   additionalCharts.innerHTML = "";
     //   return;
     // }
-
     // // Display the first chart as the main visualization
     // mainVisualization.innerHTML = `<img src="${charts[0].path}" alt="Call Analysis Visualization">`;
-
     // // Display additional charts
     // if (charts.length > 1) {
     //   let validAdditionalCharts = charts
     //     .slice(1)
     //     .filter((chart) => chart && chart.path);
-
     //   if (validAdditionalCharts.length > 0) {
     //     let additionalChartsHTML = "";
     //     for (let i = 0; i < validAdditionalCharts.length; i++) {
