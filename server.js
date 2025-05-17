@@ -25,7 +25,7 @@ app.post("/api/process-transcript-url", (req, res) => {
   fs.writeFileSync("data.csv", csvContent);
 
   // Execute the transcript.py script
-  exec("python transcript.py", (error, stdout, stderr) => {
+  exec("python transcript_url.py", (error, stdout, stderr) => {
     if (error) {
       console.error(`Error executing transcript.py: ${error}`);
       return res.status(500).json({
@@ -163,87 +163,143 @@ app.post("/api/process-transcript-json", (req, res) => {
     });
   }
 
-  // Save the JSON to a temporary file
-  const tempFilePath = "temp_transcript.json";
-  fs.writeFileSync(tempFilePath, JSON.stringify(json, null, 2));
+  // Create a temporary file to pass the JSON directly to Python
+  const tempJsonString = JSON.stringify(json);
 
-  // Create a temporary data.csv file with the path to the JSON file
-  const csvContent =
-    "Transcription URL\n" + `file://${path.resolve(tempFilePath)}`;
-  fs.writeFileSync("data.csv", csvContent);
-
-  // Execute the transcript.py script
-  exec("python transcript.py", (error, stdout, stderr) => {
-    if (error) {
-      console.error(`Error executing transcript.py: ${error}`);
-      return res.status(500).json({
-        success: false,
-        error: `Error processing transcript: ${error.message}`,
-      });
-    }
-
-    console.log(`transcript.py output: ${stdout}`);
-
-    // Clean up temp file
-    if (fs.existsSync(tempFilePath)) {
-      fs.unlinkSync(tempFilePath);
-    }
-
-    // Read the generated report
-    try {
-      // Read the all_reports.md file if it exists, otherwise try to parse the output
-      let reportContent;
-      if (fs.existsSync("all_reports.md")) {
-        reportContent = fs.readFileSync("all_reports.md", "utf8");
-      } else {
-        // Extract report content from stdout
-        const reportMatch = stdout.match(
-          /Report Content\s+(# Solar Call Analysis Report[\s\S]+)/
-        );
-        reportContent = reportMatch
-          ? reportMatch[1]
-          : "No report content found";
-      }
-
-      // Check for visualization files
-      const charts = [];
-      const analysisFiles = fs
-        .readdirSync(".")
-        .filter(
-          (file) =>
-            file.match(/transcript_\d+_analysis\.png/) ||
-            file === "call_analysis.png"
-        );
-
-      if (analysisFiles.length > 0) {
-        // Copy files to public directory if they don't exist there
-        if (!fs.existsSync("public/images")) {
-          fs.mkdirSync("public/images", { recursive: true });
-        }
-
-        analysisFiles.forEach((file) => {
-          const publicPath = path.join("public/images", file);
-          fs.copyFileSync(file, publicPath);
-          charts.push({
-            name: file,
-            path: "/images/" + file,
-          });
+  // Execute the transcript_json.py script and pass the JSON data directly via stdin
+  const pythonProcess = exec(
+    "python transcript_json.py",
+    { maxBuffer: 1024 * 1024 * 10 }, // Increase buffer size for large transcripts
+    (error, stdout, stderr) => {
+      if (error) {
+        console.error(`Error executing transcript_json.py: ${error}`);
+        return res.status(500).json({
+          success: false,
+          error: `Error processing transcript: ${error.message}`,
         });
       }
 
-      return res.json({
-        success: true,
-        report: reportContent,
-        charts: charts,
-      });
-    } catch (readError) {
-      console.error(`Error reading report: ${readError}`);
-      return res.status(500).json({
-        success: false,
-        error: `Error reading analysis report: ${readError.message}`,
-      });
+      console.log(`transcript_json.py output: ${stdout}`);
+
+      try {
+        // Parse the JSON response from the Python script
+        let jsonOutput;
+        try {
+          // Look for JSON output in stdout
+          const jsonMatch = stdout.match(/(\{.*\})/s);
+          if (jsonMatch) {
+            jsonOutput = JSON.parse(jsonMatch[1]);
+          } else {
+            throw new Error("No valid JSON found in Python output");
+          }
+        } catch (parseError) {
+          console.error(`Error parsing JSON output: ${parseError}`);
+          // Fallback to previous approach
+          let reportContent;
+          if (fs.existsSync("all_reports.md")) {
+            reportContent = fs.readFileSync("all_reports.md", "utf8");
+          } else {
+            const reportMatch = stdout.match(
+              /Report Content\s+(# Solar Call Analysis Report[\s\S]+)/
+            );
+            reportContent = reportMatch
+              ? reportMatch[1]
+              : "No report content found";
+          }
+
+          jsonOutput = {
+            success: true,
+            report: reportContent,
+            charts: [],
+          };
+        }
+
+        // Process chart files
+        const charts = [];
+        const analysisFiles = fs
+          .readdirSync(".")
+          .filter(
+            (file) =>
+              file.match(/transcript_\d+_analysis\.png/) ||
+              file === "call_analysis.png" ||
+              file === "default_visualization.png"
+          );
+
+        if (analysisFiles.length > 0) {
+          // Create public/images directory if it doesn't exist
+          if (!fs.existsSync("public/images")) {
+            fs.mkdirSync("public/images", { recursive: true });
+          }
+
+          analysisFiles.forEach((file) => {
+            const publicPath = path.join("public/images", file);
+            fs.copyFileSync(file, publicPath);
+            charts.push({
+              name: file,
+              path: "/images/" + file,
+            });
+          });
+        } else {
+          // Create a default empty chart file if none exists
+          const defaultChartPath = path.join(
+            "public/images",
+            "empty_chart.png"
+          );
+
+          // Ensure the default chart exists (same logic as in other route)
+          if (!fs.existsSync(defaultChartPath)) {
+            if (!fs.existsSync("public/images")) {
+              fs.mkdirSync("public/images", { recursive: true });
+            }
+
+            try {
+              const defaultImage = fs.existsSync("default.png")
+                ? "default.png"
+                : fs.existsSync("public/default.png")
+                ? "public/default.png"
+                : null;
+
+              if (defaultImage) {
+                fs.copyFileSync(defaultImage, defaultChartPath);
+              } else {
+                fs.writeFileSync(defaultChartPath, "");
+              }
+            } catch (e) {
+              console.error("Error creating default chart:", e);
+            }
+          }
+
+          charts.push({
+            name: "empty_chart.png",
+            path: "/images/empty_chart.png",
+          });
+        }
+
+        // Add charts to the response if not already included
+        if (!jsonOutput.charts || jsonOutput.charts.length === 0) {
+          jsonOutput.charts = charts;
+        } else {
+          // Update paths to be web-accessible
+          jsonOutput.charts = jsonOutput.charts.map((chart) => ({
+            name: chart.name,
+            path: "/images/" + chart.name,
+          }));
+        }
+
+        return res.json(jsonOutput);
+      } catch (readError) {
+        console.error(`Error processing output: ${readError}`);
+        return res.status(500).json({
+          success: false,
+          error: `Error processing analysis results: ${readError.message}`,
+        });
+      }
     }
-  });
+  );
+
+  // Write the JSON data to the Python process stdin
+  pythonProcess.stdin.write(tempJsonString);
+  pythonProcess.stdin.end();
 });
 
 // Start the server
